@@ -662,6 +662,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				data = string(sanitizedData)
 				line = "data: " + data
 			}
+			if enrichedData := fillOpenAIOAuthCacheCreationResponse(account, originalModel, dataBytes); !bytes.Equal(enrichedData, dataBytes) {
+				dataBytes = enrichedData
+				data = string(enrichedData)
+				line = "data: " + data
+			}
 			// Replace model in response if needed.
 			// Fast path: most events do not contain model field values.
 			if needModelReplace && mappedModel != "" && strings.Contains(line, mappedModel) {
@@ -1530,6 +1535,41 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 	}, true
 }
 
+func fillOpenAIOAuthCacheCreationResponse(account *Account, model string, body []byte) []byte {
+	if account == nil || !isOpenAIOAuthCacheCreationModel(model) || account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth || len(body) == 0 || !gjson.ValidBytes(body) {
+		return body
+	}
+
+	for _, usagePath := range []string{"usage", "response.usage", "data.usage", "data.response.usage"} {
+		usageValue := gjson.GetBytes(body, usagePath)
+		usage, ok := openAIUsageFromGJSON(usageValue)
+		if !ok {
+			continue
+		}
+		if usage.CacheCreationInputTokens > 0 {
+			return body
+		}
+		cacheCreationTokens := max(usage.InputTokens-usage.CacheReadInputTokens, 0)
+		if cacheCreationTokens == 0 {
+			return body
+		}
+
+		detailsPath := "input_tokens_details.cache_write_tokens"
+		if !usageValue.Get("input_tokens").Exists() {
+			if !usageValue.Get("prompt_tokens").Exists() {
+				return body
+			}
+			detailsPath = "prompt_tokens_details.cache_write_tokens"
+		}
+		patched, err := sjson.SetBytes(body, usagePath+"."+detailsPath, cacheCreationTokens)
+		if err == nil {
+			return patched
+		}
+		return body
+	}
+	return body
+}
+
 func openAICacheReadTokensFromUsage(value gjson.Result) int {
 	for _, nested := range []gjson.Result{
 		value.Get("input_tokens_details.cached_tokens"),
@@ -1620,6 +1660,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	}
 	usage := &usageValue
 	logOpenAISuccessMissingUsage(ctx, c, account, resp, usage, "json", false)
+	body = fillOpenAIOAuthCacheCreationResponse(account, originalModel, body)
 
 	// Replace model in response if needed
 	if originalModel != mappedModel {
@@ -1719,6 +1760,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 			}
 		}
 		finalResponse = supplementCompactionItemFromSSE(c, finalResponse, bodyText)
+		finalResponse = fillOpenAIOAuthCacheCreationResponse(account, originalModel, finalResponse)
 		body = finalResponse
 		if originalModel != mappedModel {
 			body = s.replaceModelInResponseBody(body, mappedModel, originalModel)

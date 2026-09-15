@@ -133,20 +133,35 @@ func collectLastResponsesInput(input gjson.Result, parts *[]string, images *[]st
 			return
 		}
 		last := array[len(array)-1]
+		if isResponsesCompactionTriggerItem(last) {
+			for i := len(array) - 2; i >= 0; i-- {
+				if !isResponsesUserTextItem(array[i]) {
+					continue
+				}
+				appendResponsesItemContent(array[i], parts, images)
+				return
+			}
+			return
+		}
 		if !isResponsesUserTextItem(last) {
 			return
 		}
-		collectContentValue(last.Get("content"), parts, images)
-		if last.Get("type").String() == "input_text" || last.Get("text").Exists() {
-			collectContentValue(last, parts, images)
-		}
+		appendResponsesItemContent(last, parts, images)
 	case input.IsObject():
 		if isResponsesUserTextItem(input) {
-			collectContentValue(input.Get("content"), parts, images)
-			if input.Get("type").String() == "input_text" || input.Get("text").Exists() {
-				collectContentValue(input, parts, images)
-			}
+			appendResponsesItemContent(input, parts, images)
 		}
+	}
+}
+
+func isResponsesCompactionTriggerItem(item gjson.Result) bool {
+	return strings.EqualFold(strings.TrimSpace(item.Get("type").String()), "compaction_trigger")
+}
+
+func appendResponsesItemContent(item gjson.Result, parts *[]string, images *[]string) {
+	collectContentValue(item.Get("content"), parts, images)
+	if item.Get("type").String() == "input_text" || item.Get("text").Exists() {
+		collectContentValue(item, parts, images)
 	}
 }
 
