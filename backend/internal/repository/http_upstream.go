@@ -192,11 +192,37 @@ func AttachOpenAITLSFingerprint(u service.HTTPUpstream, profileID int64, resolve
 	s.openaiTLSResolver = resolve
 }
 
+func openaiTLSFingerprintHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = strings.ToLower(h)
+	}
+	host = strings.TrimSuffix(host, ".")
+	switch host {
+	case "chatgpt.com", "www.chatgpt.com", "ab.chatgpt.com", "api.openai.com":
+		return true
+	}
+	return strings.HasSuffix(host, ".chatgpt.com") || strings.HasSuffix(host, ".openai.com")
+}
+
 func (s *httpUpstreamService) lookupOpenAITLSProfile(req *http.Request) *tlsfingerprint.Profile {
 	if s == nil || s.openaiTLSResolver == nil || s.openaiTLSProfileID <= 0 || req == nil {
 		return nil
 	}
 	if req.URL != nil && strings.EqualFold(req.URL.Scheme, "http") {
+		return nil
+	}
+	host := ""
+	if req.URL != nil {
+		host = req.URL.Host
+	}
+	if host == "" {
+		host = req.Host
+	}
+	if !openaiTLSFingerprintHost(host) {
 		return nil
 	}
 	if service.HTTPUpstreamProfileFromContext(req.Context()) != service.HTTPUpstreamProfileOpenAI {

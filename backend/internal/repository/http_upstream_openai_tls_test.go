@@ -36,4 +36,9 @@ func TestLookupOpenAITLSProfileUsesAttachedTemplate(t *testing.T) {
 	plainReq, err := http.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
 	require.NoError(t, err)
 	require.Nil(t, upstream.lookupOpenAITLSProfile(plainReq))
+
+	xaiReq, err := http.NewRequest(http.MethodPost, "https://api.x.ai/v1/chat/completions", nil)
+	require.NoError(t, err)
+	xaiReq = xaiReq.WithContext(service.WithHTTPUpstreamProfile(xaiReq.Context(), service.HTTPUpstreamProfileOpenAI))
+	require.Nil(t, upstream.lookupOpenAITLSProfile(xaiReq))
 }
