@@ -32,6 +32,20 @@ type Profile struct {
 	Extensions          []uint16 // Extension type IDs in order; empty uses default Node.js 24.x order
 }
 
+// AdvertisesHTTP2 reports whether the ClientHello ALPN list includes h2.
+// Empty ALPN falls back to http/1.1 only, matching the utls dialer default.
+func (p *Profile) AdvertisesHTTP2() bool {
+	if p == nil {
+		return false
+	}
+	for _, proto := range p.ALPNProtocols {
+		if proto == "h2" {
+			return true
+		}
+	}
+	return false
+}
+
 // Dialer creates TLS connections with custom fingerprints.
 type Dialer struct {
 	profile    *Profile
