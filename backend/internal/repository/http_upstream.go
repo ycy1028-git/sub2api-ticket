@@ -164,6 +164,8 @@ type httpUpstreamService struct {
 	clients map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
 	// OpenAI 走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
 	openAIHTTP2Fallbacks sync.Map
+	openaiTLSProfileID   int64
+	openaiTLSResolver    func(int64) *tlsfingerprint.Profile
 }
 
 // NewHTTPUpstream 创建通用 HTTP 上游服务
@@ -179,6 +181,28 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 		cfg:     cfg,
 		clients: make(map[string]*upstreamClientEntry),
 	}
+}
+
+func AttachOpenAITLSFingerprint(u service.HTTPUpstream, profileID int64, resolve func(int64) *tlsfingerprint.Profile) {
+	s, ok := u.(*httpUpstreamService)
+	if !ok || s == nil || profileID <= 0 || resolve == nil {
+		return
+	}
+	s.openaiTLSProfileID = profileID
+	s.openaiTLSResolver = resolve
+}
+
+func (s *httpUpstreamService) lookupOpenAITLSProfile(req *http.Request) *tlsfingerprint.Profile {
+	if s == nil || s.openaiTLSResolver == nil || s.openaiTLSProfileID <= 0 || req == nil {
+		return nil
+	}
+	if req.URL != nil && strings.EqualFold(req.URL.Scheme, "http") {
+		return nil
+	}
+	if service.HTTPUpstreamProfileFromContext(req.Context()) != service.HTTPUpstreamProfileOpenAI {
+		return nil
+	}
+	return s.openaiTLSResolver(s.openaiTLSProfileID)
 }
 
 // Do 执行 HTTP 请求
@@ -198,6 +222,13 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 //   - 调用方必须关闭 resp.Body，否则会导致 inFlight 计数泄漏
 //   - inFlight > 0 的客户端不会被淘汰，确保活跃请求不被中断
 func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	if tlsProfile := s.lookupOpenAITLSProfile(req); tlsProfile != nil {
+		return s.doWithTLSProfile(req, proxyURL, accountID, accountConcurrency, tlsProfile)
+	}
+	return s.doPlain(req, proxyURL, accountID, accountConcurrency)
+}
+
+func (s *httpUpstreamService) doPlain(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
 	applyGrokCLIProxyHeaders(req)
 	if err := s.validateRequestHost(req); err != nil {
 		return nil, err
@@ -250,8 +281,12 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	// Plain HTTP has no TLS handshake to fingerprint. Reuse the normal transport
 	// so a configured HTTP or SOCKS proxy is not bypassed.
 	if req != nil && req.URL != nil && strings.EqualFold(req.URL.Scheme, "http") {
-		return s.Do(req, proxyURL, accountID, accountConcurrency)
+		return s.doPlain(req, proxyURL, accountID, accountConcurrency)
 	}
+	return s.doWithTLSProfile(req, proxyURL, accountID, accountConcurrency, profile)
+}
+
+func (s *httpUpstreamService) doWithTLSProfile(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	applyGrokCLIProxyHeaders(req)
 	upstreamProfile := service.HTTPUpstreamProfileDefault
 	if req != nil {

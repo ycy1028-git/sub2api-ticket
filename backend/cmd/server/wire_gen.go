@@ -138,6 +138,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	tlsFingerprintProfileRepository := repository.NewTLSFingerprintProfileRepository(client)
 	tlsFingerprintProfileCache := repository.NewTLSFingerprintProfileCache(redisClient)
 	tlsFingerprintProfileService := service.NewTLSFingerprintProfileService(tlsFingerprintProfileRepository, tlsFingerprintProfileCache)
+	repository.AttachOpenAITLSFingerprint(httpUpstream, service.OpenAICodexTLSFingerprintProfileID, tlsFingerprintProfileService.GetProfileByID)
 	channelRepository := repository.NewChannelRepository(db)
 	channelCachePubSub := repository.NewChannelCache(redisClient)
 	channelService := service.NewChannelService(channelRepository, groupRepository, apiKeyAuthCacheInvalidator, pricingService, channelCachePubSub)

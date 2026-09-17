@@ -69,85 +69,6 @@ func TestOpenAIGatewayServiceRecordUsage_RejectsNilInput(t *testing.T) {
 	require.Error(t, svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{}))
 }
 
-func TestFillOpenAIOAuthCacheCreationTokens(t *testing.T) {
-	tests := []struct {
-		name    string
-		account *Account
-		usage   OpenAIUsage
-		want    int
-	}{
-		{
-			name:    "derives uncached input for OpenAI OAuth",
-			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth},
-			usage:   OpenAIUsage{InputTokens: 100, CacheReadInputTokens: 40},
-			want:    60,
-		},
-		{
-			name:    "preserves explicit cache creation",
-			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth},
-			usage:   OpenAIUsage{InputTokens: 100, CacheReadInputTokens: 40, CacheCreationInputTokens: 20},
-			want:    20,
-		},
-		{
-			name:    "clamps invalid upstream totals",
-			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth},
-			usage:   OpenAIUsage{InputTokens: 20, CacheReadInputTokens: 30},
-			want:    0,
-		},
-		{
-			name:    "ignores OpenAI API key accounts",
-			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
-			usage:   OpenAIUsage{InputTokens: 100, CacheReadInputTokens: 40},
-			want:    0,
-		},
-		{
-			name:    "ignores other OAuth platforms",
-			account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth},
-			usage:   OpenAIUsage{InputTokens: 100, CacheReadInputTokens: 40},
-			want:    0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fillOpenAIOAuthCacheCreationTokens(tt.account, "gpt-5.6-sol", &tt.usage)
-			require.Equal(t, tt.want, tt.usage.CacheCreationInputTokens)
-		})
-	}
-}
-
-func TestOpenAIGatewayServiceRecordUsage_DerivesOAuthCacheCreationTokens(t *testing.T) {
-	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
-	svc := newOpenAIRecordUsageServiceForTest(
-		usageRepo,
-		&openAIRecordUsageUserRepoStub{},
-		&openAIRecordUsageSubRepoStub{},
-		nil,
-	)
-
-	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
-		Result: &OpenAIForwardResult{
-			RequestID: "resp_oauth_cache_creation",
-			Usage: OpenAIUsage{
-				InputTokens:          100,
-				OutputTokens:         10,
-				CacheReadInputTokens: 40,
-			},
-			Model:    "gpt-5.6-sol",
-			Duration: time.Second,
-		},
-		APIKey:  &APIKey{ID: 1021},
-		User:    &User{ID: 2021},
-		Account: &Account{ID: 3021, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
-	})
-
-	require.NoError(t, err)
-	require.NotNil(t, usageRepo.lastLog)
-	require.Zero(t, usageRepo.lastLog.InputTokens)
-	require.Equal(t, 60, usageRepo.lastLog.CacheCreationTokens)
-	require.Equal(t, 40, usageRepo.lastLog.CacheReadTokens)
-}
-
 func TestRecordCyberPolicyUsageLog_BillsRealUpstreamTokens(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	userRepo := &openAIRecordUsageUserRepoStub{}
@@ -3182,12 +3103,7 @@ func TestOpenAIGatewayServiceRecordUsage_CodexDefaultEchoKeepsFastBilling(t *tes
 			require.NotNil(t, usageRepo.lastLog.ServiceTier)
 			require.Equal(t, "priority", *usageRepo.lastLog.ServiceTier)
 
-			billingTokens := tokens
-			if accountType == AccountTypeOAuth {
-				billingTokens.InputTokens = 0
-				billingTokens.CacheCreationTokens = tokens.InputTokens
-			}
-			fastCost, calcErr := svc.billingService.CalculateCostWithServiceTier("gpt-5.6-sol", billingTokens, 1.0, "priority")
+			fastCost, calcErr := svc.billingService.CalculateCostWithServiceTier("gpt-5.6-sol", tokens, 1.0, "priority")
 			require.NoError(t, calcErr)
 			require.InDelta(t, fastCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10)
 		})
@@ -3280,7 +3196,7 @@ func TestOpenAIGatewayServiceRecordUsage_FreeOpenAIFastChargesStandard(t *testin
 		},
 		APIKey:  apiKey,
 		User:    &User{ID: 2020},
-		Account: &Account{ID: 3020, Platform: PlatformOpenAI, Type: AccountTypeSetupToken},
+		Account: &Account{ID: 3020, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
 	})
 
 	require.NoError(t, err)

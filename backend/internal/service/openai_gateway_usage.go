@@ -167,7 +167,6 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	user := input.User
 	account := input.Account
 	subscription := input.Subscription
-	fillOpenAIOAuthCacheCreationTokens(account, result.Model, &result.Usage)
 	billingAccount, err := resolveCredentialAccount(ctx, s.accountRepo, account)
 	if err != nil {
 		return err
@@ -524,22 +523,6 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
 
 	return nil
-}
-
-func isOpenAIOAuthCacheCreationModel(model string) bool {
-	switch strings.TrimSpace(model) {
-	case "codex-auto-review", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra":
-		return true
-	default:
-		return false
-	}
-}
-
-func fillOpenAIOAuthCacheCreationTokens(account *Account, model string, usage *OpenAIUsage) {
-	if account == nil || usage == nil || !isOpenAIOAuthCacheCreationModel(model) || account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth || usage.CacheCreationInputTokens > 0 {
-		return
-	}
-	usage.CacheCreationInputTokens = max(usage.InputTokens-usage.CacheReadInputTokens, 0)
 }
 
 // hasIdentifiedOpenAIResponsePricing 判断上游自报的响应模型是否可以作为计费基准，
