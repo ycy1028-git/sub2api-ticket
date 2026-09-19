@@ -164,6 +164,21 @@ func TestExtractContentModerationInput_ResponsesLastUserMessageExtracted(t *test
 	require.Equal(t, "latest", input.Text)
 }
 
+func TestExtractContentModerationInput_ResponsesCompactionTriggerUsesPreviousUserMessage(t *testing.T) {
+	body := []byte(`{
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]},
+			{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"latest before compact"}]},
+			{"type":"compaction_trigger"}
+		]
+	}`)
+
+	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIResponses, body)
+
+	require.Equal(t, "latest before compact", input.Text)
+}
+
 func TestExtractContentModerationInput_ResponsesLastIsAssistantSkipped(t *testing.T) {
 	body := []byte(`{
 		"input":[

@@ -406,6 +406,7 @@ type ContentModerationLog struct {
 	CategoryScores    map[string]float64 `json:"category_scores"`
 	ThresholdSnapshot map[string]float64 `json:"threshold_snapshot"`
 	InputExcerpt      string             `json:"input_excerpt"`
+	InputFull         string             `json:"input_full,omitempty"`
 	UpstreamLatencyMS *int               `json:"upstream_latency_ms,omitempty"`
 	Error             string             `json:"error"`
 	ViolationCount    int                `json:"violation_count"`
@@ -2978,6 +2979,10 @@ type CyberPolicyRecordInput struct {
 	GroupName       string
 	Endpoint        string
 	Model           string
+	Protocol        string
+	RequestBody     []byte
+	InputExcerpt    string
+	InputFull       string
 	UpstreamMessage string
 	UpstreamBody    string
 	UpstreamStatus  int
@@ -3021,6 +3026,20 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 	if in.UpstreamInTok > 0 || in.UpstreamOutTok > 0 {
 		errBody = fmt.Sprintf("%s\nupstream_usage=in:%d,out:%d", errBody, in.UpstreamInTok, in.UpstreamOutTok)
 	}
+	rawRequestBody := strings.TrimSpace(string(in.RequestBody))
+	inputExcerpt := strings.TrimSpace(in.InputExcerpt)
+	inputFull := strings.TrimSpace(in.InputFull)
+	if inputFull == "" && rawRequestBody != "" {
+		inputFull = rawRequestBody
+	}
+	if inputExcerpt == "" {
+		switch {
+		case rawRequestBody != "":
+			inputExcerpt = rawRequestBody
+		case inputFull != "":
+			inputExcerpt = inputFull
+		}
+	}
 	log := &ContentModerationLog{
 		RequestID:       in.RequestID,
 		UserID:          userID,
@@ -3037,6 +3056,8 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 		Flagged:         true,
 		HighestCategory: "cyber_policy",
 		HighestScore:    1.0,
+		InputExcerpt:    trimRunes(inputExcerpt, maxModerationExcerptRunes),
+		InputFull:       inputFull,
 		Error:           trimRunes(redactContentModerationSecrets(errBody), maxModerationExcerptRunes*4),
 		CreatedAt:       time.Now(),
 	}

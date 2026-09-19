@@ -11,6 +11,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 )
 
+const OpenAICodexTLSFingerprintProfileID int64 = 1
+
 // TLSFingerprintProfileRepository 定义 TLS 指纹模板的数据访问接口
 type TLSFingerprintProfileRepository interface {
 	List(ctx context.Context) ([]*model.TLSFingerprintProfile, error)

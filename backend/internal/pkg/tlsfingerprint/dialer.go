@@ -32,6 +32,20 @@ type Profile struct {
 	Extensions          []uint16 // Extension type IDs in order; empty uses default Node.js 24.x order
 }
 
+// AdvertisesHTTP2 reports whether the ClientHello ALPN list includes h2.
+// Empty ALPN falls back to http/1.1 only, matching the utls dialer default.
+func (p *Profile) AdvertisesHTTP2() bool {
+	if p == nil {
+		return false
+	}
+	for _, proto := range p.ALPNProtocols {
+		if proto == "h2" {
+			return true
+		}
+	}
+	return false
+}
+
 // Dialer creates TLS connections with custom fingerprints.
 type Dialer struct {
 	profile    *Profile
@@ -276,7 +290,10 @@ func performTLSHandshake(ctx context.Context, conn net.Conn, profile *Profile, a
 	}
 
 	spec := buildClientHelloSpecFromProfile(profile)
-	tlsConn := utls.UClient(conn, &utls.Config{ServerName: host}, utls.HelloCustom)
+	tlsConn := utls.UClient(conn, &utls.Config{
+		ServerName:       host,
+		CurvePreferences: curvePreferencesFromProfile(profile),
+	}, utls.HelloCustom)
 
 	if err := tlsConn.ApplyPreset(spec); err != nil {
 		_ = conn.Close()
@@ -305,6 +322,39 @@ func toUTLSCurves(curves []uint16) []utls.CurveID {
 		result[i] = utls.CurveID(c)
 	}
 	return result
+}
+
+// supportedUTLSCurves is the classical set that this utls/Go combination can
+// put in tls.Config.CurvePreferences. X25519MLKEM768 (4588) is valid in a
+// ClientHello parrot but makes HandshakeContext fail with
+// "tls: CurvePreferences includes unsupported curve".
+var supportedUTLSCurves = map[utls.CurveID]struct{}{
+	utls.X25519:    {},
+	utls.CurveP256: {},
+	utls.CurveP384: {},
+	utls.CurveP521: {},
+}
+
+func filterSupportedUTLSCurves(curves []utls.CurveID) []utls.CurveID {
+	out := make([]utls.CurveID, 0, len(curves))
+	for _, curve := range curves {
+		if _, ok := supportedUTLSCurves[curve]; ok {
+			out = append(out, curve)
+		}
+	}
+	return out
+}
+
+func curvePreferencesFromProfile(profile *Profile) []utls.CurveID {
+	curves := defaultCurves
+	if profile != nil && len(profile.Curves) > 0 {
+		curves = toUTLSCurves(profile.Curves)
+	}
+	curves = filterSupportedUTLSCurves(curves)
+	if len(curves) == 0 {
+		return append([]utls.CurveID(nil), defaultCurves...)
+	}
+	return curves
 }
 
 // defaultExtensionOrder is the Node.js 24.x extension order.
@@ -344,6 +394,10 @@ func buildClientHelloSpecFromProfile(profile *Profile) *utls.ClientHelloSpec {
 	if profile != nil && len(profile.Curves) > 0 {
 		curves = toUTLSCurves(profile.Curves)
 	}
+	curves = filterSupportedUTLSCurves(curves)
+	if len(curves) == 0 {
+		curves = append([]utls.CurveID(nil), defaultCurves...)
+	}
 
 	pointFormats := defaultPointFormats
 	if profile != nil && len(profile.PointFormats) > 0 {
@@ -371,6 +425,10 @@ func buildClientHelloSpecFromProfile(profile *Profile) *utls.ClientHelloSpec {
 	keyShareGroups := []utls.CurveID{utls.X25519}
 	if profile != nil && len(profile.KeyShareGroups) > 0 {
 		keyShareGroups = toUTLSCurves(profile.KeyShareGroups)
+	}
+	keyShareGroups = filterSupportedUTLSCurves(keyShareGroups)
+	if len(keyShareGroups) == 0 {
+		keyShareGroups = []utls.CurveID{utls.X25519}
 	}
 
 	pskModes := []uint16{uint16(utls.PskModeDHE)}

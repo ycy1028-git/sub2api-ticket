@@ -157,6 +157,79 @@ func TestRecordCyberPolicyEvent_WritesLogWhenEnabled(t *testing.T) {
 		"Error should mention flagged or cyber_policy")
 }
 
+func TestRecordCyberPolicyEvent_PersistsRawRequestBodyFromTriggeredRequestBody(t *testing.T) {
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled: "true",
+		}},
+		repo,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	body := []byte(`{"model":"gpt-5","stream":true,"reasoning":{"effort":"high"},"input":[{"role":"user","content":[{"type":"input_text","text":"please review the cyber workflow token sk-test-123456 and keep the request denied"}]}],"metadata":{"source":"cyber-test"}}`)
+	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+		UserID:          1,
+		UserEmail:       "u@x.com",
+		Model:           "gpt-5",
+		Endpoint:        "/v1/responses",
+		Protocol:        ContentModerationProtocolOpenAIResponses,
+		RequestBody:     body,
+		UpstreamMessage: "flagged",
+		UpstreamBody:    `{"error":{"code":"cyber_policy"}}`,
+		UpstreamStatus:  400,
+	})
+
+	logs := repo.snapshotLogs()
+	require.Len(t, logs, 1)
+	require.Equal(t, strings.TrimSpace(string(body)), logs[0].InputFull)
+	require.Contains(t, logs[0].InputExcerpt, `"stream":true`)
+	require.Contains(t, logs[0].InputExcerpt, `"reasoning":{"effort":"high"}`)
+}
+
+func TestRecordCyberPolicyEvent_PersistsUntrimmedRawRequestBodyWhenLong(t *testing.T) {
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled: "true",
+		}},
+		repo,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	longText := strings.Repeat("keep the cyber request blocked and preserve the complete original text. ", 260) + "terminal-marker-full-text"
+	body := []byte(`{"model":"gpt-5","input":[{"role":"user","content":[{"type":"input_text","text":"` + longText + `"}]}],"metadata":{"source":"long-cyber-test"}}`)
+	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+		UserID:          1,
+		UserEmail:       "u@x.com",
+		Model:           "gpt-5",
+		Endpoint:        "/v1/responses",
+		Protocol:        ContentModerationProtocolOpenAIResponses,
+		RequestBody:     body,
+		UpstreamMessage: "flagged",
+		UpstreamBody:    `{"error":{"code":"cyber_policy"}}`,
+		UpstreamStatus:  400,
+	})
+
+	logs := repo.snapshotLogs()
+	require.Len(t, logs, 1)
+	require.Equal(t, strings.TrimSpace(string(body)), logs[0].InputFull)
+	require.Contains(t, logs[0].InputFull, "terminal-marker-full-text")
+	require.NotEmpty(t, logs[0].InputExcerpt)
+	require.Less(t, len([]rune(logs[0].InputExcerpt)), len([]rune(logs[0].InputFull)))
+	require.NotContains(t, logs[0].InputExcerpt, "terminal-marker-full-text")
+}
+
 func TestRecordCyberPolicyEvent_RespectsContentModerationScope(t *testing.T) {
 	groupID := int64(7)
 	tests := []struct {

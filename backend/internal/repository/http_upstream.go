@@ -164,6 +164,8 @@ type httpUpstreamService struct {
 	clients map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
 	// OpenAI 走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
 	openAIHTTP2Fallbacks sync.Map
+	openaiTLSProfileID   int64
+	openaiTLSResolver    func(int64) *tlsfingerprint.Profile
 }
 
 // NewHTTPUpstream 创建通用 HTTP 上游服务
@@ -179,6 +181,54 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 		cfg:     cfg,
 		clients: make(map[string]*upstreamClientEntry),
 	}
+}
+
+func AttachOpenAITLSFingerprint(u service.HTTPUpstream, profileID int64, resolve func(int64) *tlsfingerprint.Profile) {
+	s, ok := u.(*httpUpstreamService)
+	if !ok || s == nil || profileID <= 0 || resolve == nil {
+		return
+	}
+	s.openaiTLSProfileID = profileID
+	s.openaiTLSResolver = resolve
+}
+
+func openaiTLSFingerprintHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = strings.ToLower(h)
+	}
+	host = strings.TrimSuffix(host, ".")
+	switch host {
+	case "chatgpt.com", "www.chatgpt.com", "ab.chatgpt.com", "api.openai.com":
+		return true
+	}
+	return strings.HasSuffix(host, ".chatgpt.com") || strings.HasSuffix(host, ".openai.com")
+}
+
+func (s *httpUpstreamService) lookupOpenAITLSProfile(req *http.Request) *tlsfingerprint.Profile {
+	if s == nil || s.openaiTLSResolver == nil || s.openaiTLSProfileID <= 0 || req == nil {
+		return nil
+	}
+	if req.URL != nil && strings.EqualFold(req.URL.Scheme, "http") {
+		return nil
+	}
+	host := ""
+	if req.URL != nil {
+		host = req.URL.Host
+	}
+	if host == "" {
+		host = req.Host
+	}
+	if !openaiTLSFingerprintHost(host) {
+		return nil
+	}
+	if service.HTTPUpstreamProfileFromContext(req.Context()) != service.HTTPUpstreamProfileOpenAI {
+		return nil
+	}
+	return s.openaiTLSResolver(s.openaiTLSProfileID)
 }
 
 // Do 执行 HTTP 请求
@@ -198,6 +248,13 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 //   - 调用方必须关闭 resp.Body，否则会导致 inFlight 计数泄漏
 //   - inFlight > 0 的客户端不会被淘汰，确保活跃请求不被中断
 func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	if tlsProfile := s.lookupOpenAITLSProfile(req); tlsProfile != nil {
+		return s.doWithTLSProfile(req, proxyURL, accountID, accountConcurrency, tlsProfile)
+	}
+	return s.doPlain(req, proxyURL, accountID, accountConcurrency)
+}
+
+func (s *httpUpstreamService) doPlain(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
 	applyGrokCLIProxyHeaders(req)
 	if err := s.validateRequestHost(req); err != nil {
 		return nil, err
@@ -250,8 +307,12 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	// Plain HTTP has no TLS handshake to fingerprint. Reuse the normal transport
 	// so a configured HTTP or SOCKS proxy is not bypassed.
 	if req != nil && req.URL != nil && strings.EqualFold(req.URL.Scheme, "http") {
-		return s.Do(req, proxyURL, accountID, accountConcurrency)
+		return s.doPlain(req, proxyURL, accountID, accountConcurrency)
 	}
+	return s.doWithTLSProfile(req, proxyURL, accountID, accountConcurrency, profile)
+}
+
+func (s *httpUpstreamService) doWithTLSProfile(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	applyGrokCLIProxyHeaders(req)
 	upstreamProfile := service.HTTPUpstreamProfileDefault
 	if req != nil {
@@ -1314,7 +1375,7 @@ func newUpstreamDialer() *net.Dialer {
 //   - proxyURL: 代理 URL（nil 表示直连）
 //
 // 返回:
-//   - *http.Transport: 配置好的 Transport 实例
+//   - http.RoundTripper: HTTP/1.1 utls transport, or HTTP/2 when the profile ALPN includes h2
 //   - error: 代理配置错误
 //
 // Transport 参数说明:
@@ -1389,7 +1450,7 @@ func enableHTTP2KeepAlive(transport *http.Transport) (*http2.Transport, error) {
 //   - nil/空: 直连，使用 TLSFingerprintDialer
 //   - http/https: HTTP 代理，使用 HTTPProxyDialer（CONNECT 隧道 + utls 握手）
 //   - socks5: SOCKS5 代理，使用 SOCKS5ProxyDialer（SOCKS5 隧道 + utls 握手）
-func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *url.URL, profile *tlsfingerprint.Profile) (*http.Transport, error) {
+func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *url.URL, profile *tlsfingerprint.Profile) (http.RoundTripper, error) {
 	transport := &http.Transport{
 		MaxIdleConns:          settings.maxIdleConns,
 		MaxIdleConnsPerHost:   settings.maxIdleConnsPerHost,
@@ -1400,12 +1461,14 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 		ForceAttemptHTTP2: false,
 	}
 
+	var dialTLS func(ctx context.Context, network, addr string) (net.Conn, error)
+
 	// 根据代理类型选择合适的 TLS 指纹 Dialer
 	if proxyURL == nil {
 		// 直连：使用 TLSFingerprintDialer
 		slog.Debug("tls_fingerprint_transport_direct")
 		dialer := tlsfingerprint.NewDialer(profile, nil)
-		transport.DialTLSContext = dialer.DialTLSContext
+		dialTLS = dialer.DialTLSContext
 	} else {
 		scheme := strings.ToLower(proxyURL.Scheme)
 		switch scheme {
@@ -1413,7 +1476,7 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 			// SOCKS5 代理：使用 SOCKS5ProxyDialer
 			slog.Debug("tls_fingerprint_transport_socks5", "proxy", proxyURL.Host)
 			socks5Dialer := tlsfingerprint.NewSOCKS5ProxyDialer(profile, proxyURL)
-			transport.DialTLSContext = socks5Dialer.DialTLSContext
+			dialTLS = socks5Dialer.DialTLSContext
 		case "https":
 			// The fingerprint dialer emits a plaintext CONNECT preface and cannot
 			// establish TLS to an HTTPS proxy. Keep proxy routing via net/http.
@@ -1422,17 +1485,36 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 			// HTTP/HTTPS 代理：使用 HTTPProxyDialer（CONNECT 隧道）
 			slog.Debug("tls_fingerprint_transport_http_connect", "proxy", proxyURL.Host)
 			httpDialer := tlsfingerprint.NewHTTPProxyDialer(profile, proxyURL)
-			transport.DialTLSContext = httpDialer.DialTLSContext
+			dialTLS = httpDialer.DialTLSContext
 		default:
 			// 未知代理类型，回退到普通代理配置（无 TLS 指纹）
 			slog.Debug("tls_fingerprint_transport_unknown_scheme_fallback", "scheme", scheme)
 			if err := proxyutil.ConfigureTransportProxy(transport, proxyURL); err != nil {
 				return nil, err
 			}
+			return transport, nil
 		}
 	}
 
+	if profile.AdvertisesHTTP2() {
+		// net/http disables HTTP/2 when DialTLSContext is set, but the rustls
+		// Codex template advertises h2. Speak HTTP/2 on the utls conn or the
+		// server SETTINGS frame is read as a malformed HTTP/1.1 response.
+		return newUTLSHTTP2Transport(dialTLS, settings.idleConnTimeout), nil
+	}
+	transport.DialTLSContext = dialTLS
 	return transport, nil
+}
+
+func newUTLSHTTP2Transport(dialTLS func(ctx context.Context, network, addr string) (net.Conn, error), idleConnTimeout time.Duration) *http2.Transport {
+	return &http2.Transport{
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			return dialTLS(ctx, network, addr)
+		},
+		IdleConnTimeout: idleConnTimeout,
+		ReadIdleTimeout: longStreamHTTP2ReadIdleTimeout,
+		PingTimeout:     longStreamHTTP2PingTimeout,
+	}
 }
 
 // trackedBody 带跟踪功能的响应体包装器
