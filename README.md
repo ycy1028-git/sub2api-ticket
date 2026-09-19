@@ -14,6 +14,9 @@
 
 **AI API Gateway Platform for Subscription Quota Distribution**
 
+This repository is a modified edition based on `Wei-Shaw/sub2api` v0.2.5.
+It adds local cyber logging, OpenAI TLS fingerprint handling, and persistent Codex turn-state ticket controls. See [NOTICE.md](NOTICE.md).
+
 English | [中文](README_CN.md) | [日本語](README_JA.md)
 
 </div>
