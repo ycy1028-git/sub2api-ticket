@@ -2251,6 +2251,44 @@
         </div>
       </div>
 
+      <!-- Codex Turn State 门票策略与状态（仅 OpenAI OAuth/SetupToken） -->
+      <div
+        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token')"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <label class="input-label mb-0">{{ t('admin.accounts.openai.codexTurnTicket') }}</label>
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.openai.codexTurnTicketDesc') }}
+        </p>
+        <div class="mt-3 space-y-2">
+          <div v-for="ticket in codexTurnTickets" :key="ticket.model" class="rounded-md bg-gray-50 px-3 py-2 text-sm dark:bg-dark-700">
+            <div class="flex items-center justify-between gap-3">
+              <span class="font-medium">{{ ticket.model }}</span>
+              <span :class="codexTicketStatusClass(ticket)">{{ codexTicketStatusLabel(ticket) }}</span>
+            </div>
+            <div class="mt-2 grid gap-2 sm:grid-cols-[auto_1fr_1fr_auto]">
+              <Toggle :id="`codex-ticket-${ticket.model}-enabled`" v-model="codexTicketModelSettings[ticket.model].enabled" />
+              <Select v-model="codexTicketModelSettings[ticket.model].target_mode" :options="codexTicketTargetModeOptions" />
+              <input v-model.number="codexTicketModelSettings[ticket.model].target_length" type="number" min="128" max="2048" class="input w-full" :disabled="codexTicketModelSettings[ticket.model].target_mode !== 'manual'" />
+              <Select v-model="codexTicketModelSettings[ticket.model].missing_policy" :options="codexTicketMissingPolicyOptions" />
+              <button type="button" class="btn-secondary whitespace-nowrap" :disabled="codexTicketProbeLoading[ticket.model]" @click="probeCodexTicket(ticket.model)">
+                {{ codexTicketProbeLoading[ticket.model] ? t('admin.accounts.openai.codexTicketProbing') : t('admin.accounts.openai.codexTicketProbeNow') }}
+              </button>
+            </div>
+            <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.codexTicketStatusDetail', {
+                target: ticket.target_length,
+                current: codexTicketCurrentLength(ticket),
+                policy: ticket.missing_policy === 'pause'
+                  ? t('admin.accounts.openai.codexTicketPolicyPauseShort')
+                  : t('admin.accounts.openai.codexTicketPolicyAllowShort')
+              }) }}
+              <span v-if="ticket.next_probe_at"> · {{ t('admin.accounts.openai.codexTicketNextProbe', { time: formatDateTime(ticket.next_probe_at) }) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Codex 指纹收敛模式（仅 OpenAI OAuth） -->
       <div
         v-if="account?.platform === 'openai' && account?.type === 'oauth'"
@@ -3145,6 +3183,81 @@ const selectableGroups = computed(() => {
 // 故隐藏代理选择器。
 const isSparkShadow = computed(() => props.account?.parent_account_id != null)
 
+const codexTurnTickets = computed(() => props.account?.codex_turn_tickets ?? [])
+
+type CodexTicketModelSetting = {
+  enabled: boolean
+  target_mode: CodexTicketTargetMode
+  target_length: number
+  missing_policy: CodexTicketMissingPolicy
+}
+
+const codexTicketModelSettings = reactive<Record<string, CodexTicketModelSetting>>({
+  'gpt-6-astra': { enabled: true, target_mode: 'auto', target_length: 332, missing_policy: 'allow' },
+  'gpt-5.6-sol': { enabled: true, target_mode: 'auto', target_length: 332, missing_policy: 'allow' },
+})
+const codexTicketProbeLoading = reactive<Record<string, boolean>>({})
+
+type CodexTicketStatus = NonNullable<Account['codex_turn_tickets']>[number]
+
+function formatCodexTicketRemaining(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds || 0))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}m${String(s).padStart(2, '0')}s`
+}
+
+function codexTicketStatusLabel(ticket: CodexTicketStatus) {
+  if (ticket.ready) {
+    return t('admin.accounts.openai.codexTurnTicketReady', {
+      time: formatCodexTicketRemaining(ticket.remaining_seconds)
+    })
+  }
+  const keyByType: Record<string, string> = {
+    non_target: 'codexTicketTypeNonTarget',
+    expired: 'codexTicketTypeExpired',
+    rate_limited: 'codexTicketTypeRateLimited',
+    quota_exhausted: 'codexTicketTypeQuotaExhausted',
+    error: 'codexTicketTypeError',
+    http_error: 'codexTicketTypeError',
+    token_error: 'codexTicketTypeError',
+    disabled: 'codexTicketTypeDisabled'
+  }
+  const key = keyByType[ticket.ticket_type]
+  if (key) return t(`admin.accounts.openai.${key}`)
+  return ticket.blocked
+    ? t('admin.accounts.openai.codexTurnTicketPaused', { length: ticket.target_length })
+    : t('admin.accounts.openai.codexTurnTicketMissing')
+}
+
+function codexTicketCurrentLength(ticket: CodexTicketStatus) {
+  return ticket.ready
+    ? ticket.length || ticket.observed_length || '-'
+    : ticket.observed_length || ticket.length || '-'
+}
+
+function codexTicketStatusClass(ticket: CodexTicketStatus) {
+  if (ticket.ready) return 'text-emerald-600 dark:text-emerald-400'
+  if (ticket.ticket_type === 'rate_limited' || ticket.ticket_type === 'quota_exhausted') {
+    return 'text-red-600 dark:text-red-400'
+  }
+  if (ticket.blocked) return 'text-amber-600 dark:text-amber-400'
+  return 'text-gray-500'
+}
+
+async function probeCodexTicket(model: string) {
+  if (!props.account) return
+  codexTicketProbeLoading[model] = true
+  try {
+    const result = await adminAPI.accounts.probeCodexTicket(props.account.id, model)
+    emit('updated', { ...props.account, codex_turn_tickets: result.tickets })
+  } catch (error: any) {
+    appStore.showError(error?.message || t('admin.accounts.openai.codexTicketProbeFailed'))
+  } finally {
+    codexTicketProbeLoading[model] = false
+  }
+}
+
 const hideAccountLongContextBilling = computed(() => {
   return allSelectedGroupsEnableLongContextPricing(form.group_ids, props.groups)
 })
@@ -3527,6 +3640,11 @@ const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
 const codexCLIOnlyAppServerEnabled = ref(false)
+type CodexTicketTargetMode = 'auto' | 'manual'
+type CodexTicketMissingPolicy = 'pause' | 'allow'
+const codexTicketTargetMode = ref<CodexTicketTargetMode>('auto')
+const codexTicketTargetLength = ref(332)
+const codexTicketMissingPolicy = ref<CodexTicketMissingPolicy>('allow')
 type CodexFingerprintMode = 'off' | 'device' | 'session' | 'full'
 const codexFingerprintMode = ref<CodexFingerprintMode>('off')
 type CodexImageToolMode = 'inherit' | 'enabled' | 'disabled' | 'block'
@@ -3565,6 +3683,14 @@ const codexFingerprintModeOptions = computed(() => [
   { value: 'device' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintDevice') },
   { value: 'session' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintSession') },
   { value: 'full' as CodexFingerprintMode, label: t('admin.accounts.openai.codexFingerprintFull') },
+])
+const codexTicketTargetModeOptions = computed(() => [
+  { value: 'auto' as CodexTicketTargetMode, label: t('admin.accounts.openai.codexTicketTargetAuto') },
+  { value: 'manual' as CodexTicketTargetMode, label: t('admin.accounts.openai.codexTicketTargetManual') }
+])
+const codexTicketMissingPolicyOptions = computed(() => [
+  { value: 'pause' as CodexTicketMissingPolicy, label: t('admin.accounts.openai.codexTicketMissingPause') },
+  { value: 'allow' as CodexTicketMissingPolicy, label: t('admin.accounts.openai.codexTicketMissingAllow') }
 ])
 
 const openAIWSModeOptions = computed(() => [
@@ -4010,6 +4136,13 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
   codexCLIOnlyAppServerEnabled.value = false
+  codexTicketTargetMode.value = 'auto'
+  codexTicketTargetLength.value = 332
+  codexTicketMissingPolicy.value = 'allow'
+  for (const model of ['gpt-6-astra', 'gpt-5.6-sol']) {
+    codexTicketModelSettings[model] = { enabled: true, target_mode: 'auto', target_length: 332, missing_policy: 'allow' }
+    codexTicketProbeLoading[model] = false
+  }
   codexFingerprintMode.value = 'off'
   codexImageToolMode.value = 'inherit'
   anthropicPassthroughEnabled.value = false
@@ -4061,6 +4194,22 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       codexCLIOnlyEnabled.value = extra?.codex_cli_only === true
       codexCLIOnlyAppServerEnabled.value =
         extra?.codex_cli_only_allow_app_server === true
+      codexTicketTargetMode.value = extra?.codex_ticket_target_mode === 'manual' ? 'manual' : 'auto'
+      const configuredTargetLength = Number(extra?.codex_ticket_target_length)
+      const resolvedTargetLength = newAccount.codex_turn_tickets?.[0]?.target_length
+      codexTicketTargetLength.value = Number.isFinite(configuredTargetLength) && configuredTargetLength >= 128
+        ? Math.trunc(configuredTargetLength)
+        : resolvedTargetLength || 332
+      codexTicketMissingPolicy.value = extra?.codex_ticket_missing_policy === 'pause' ? 'pause' : 'allow'
+      for (const model of ['gpt-6-astra', 'gpt-5.6-sol']) {
+        const modelOverride = extra?.[`codex_ticket_policy:${model}`] as Record<string, unknown> | undefined
+        codexTicketModelSettings[model] = {
+          enabled: modelOverride?.enabled !== false,
+          target_mode: modelOverride?.codex_ticket_target_mode === 'manual' ? 'manual' : 'auto',
+          target_length: Number(modelOverride?.codex_ticket_target_length) || 332,
+          missing_policy: modelOverride?.codex_ticket_missing_policy === 'pause' ? 'pause' : 'allow'
+        }
+      }
     }
     if (newAccount.type === 'oauth') {
       const fpMode = extra?.codex_fingerprint_mode as string | undefined
@@ -4968,6 +5117,15 @@ const handleSubmit = async () => {
 			return
 		}
 	}
+	if (
+		props.account.platform === 'openai' &&
+		(props.account.type === 'oauth' || props.account.type === 'setup-token') &&
+		codexTicketTargetMode.value === 'manual' &&
+		(!Number.isFinite(codexTicketTargetLength.value) || codexTicketTargetLength.value < 128 || codexTicketTargetLength.value > 2048)
+	) {
+		appStore.showError(t('admin.accounts.openai.codexTicketTargetLengthInvalid'))
+		return
+	}
 
   const updatePayload: Record<string, unknown> = { ...form }
   try {
@@ -5594,6 +5752,23 @@ const handleSubmit = async () => {
         } else {
           delete newExtra.codex_cli_only_allow_app_server
         }
+
+		newExtra.codex_ticket_target_mode = codexTicketTargetMode.value
+		if (codexTicketTargetMode.value === 'manual') {
+			newExtra.codex_ticket_target_length = Math.trunc(codexTicketTargetLength.value)
+		} else {
+			delete newExtra.codex_ticket_target_length
+		}
+		newExtra.codex_ticket_missing_policy = codexTicketMissingPolicy.value
+		for (const model of ['gpt-6-astra', 'gpt-5.6-sol']) {
+			const setting = codexTicketModelSettings[model]
+			newExtra[`codex_ticket_policy:${model}`] = {
+				enabled: setting.enabled,
+				codex_ticket_target_mode: setting.target_mode,
+				codex_ticket_target_length: Math.trunc(setting.target_length),
+				codex_ticket_missing_policy: setting.missing_policy,
+			}
+		}
       }
 
       // 指纹收敛模式：默认 off（不写入）；device/session/full 是显式 opt-in，

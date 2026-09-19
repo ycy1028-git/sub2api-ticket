@@ -543,6 +543,29 @@ export default {
         openaiCodexVersionAutoSyncHint: 'Fetches the latest stable client version from the official repository every 6 hours, so you never need to upgrade this service just to keep the version current. When disabled, only the version above or the built-in default is used.',
         openaiCodexVersionSyncedValue: 'Currently synced: {version}',
         codexHardeningTitle: "Codex Settings",
+        codexTicketEnabled: "Codex Turn State harvest",
+        codexTicketEnabledDesc:
+          "When off, the gateway neither harvests nor injects x-codex-turn-state and forwards traffic as usual. When on, it harvests the account's configured target ticket and overwrites that header on production requests. Set target mode and missing-ticket scheduling under Accounts → Edit → Codex Turn State ticket.",
+        codexTicketHarvestProxy: "Codex Turn State harvest proxy",
+        codexTicketHarvestProxyDesc:
+          "Used only for minting target turn-state tickets when the feature is enabled. Changes apply to subsequent probes without a restart. Production traffic still uses each account's residential proxy. Paste a full HTTP or SOCKS5h proxy URL including username and password. The proxy provider must handle IP rotation. Leave blank when saving to keep the stored value.",
+        codexTicketHarvestProxyPlaceholder: "http://user:pass{'@'}proxy.example.com:1080",
+        codexTicketHarvestProxyConfigured: "Configured (password hidden). Paste a full new proxy URL to replace it.",
+        codexTicketMissRetrySeconds: "Regular miss retry interval (seconds)",
+        codexTicketMissRetrySecondsDesc:
+          "Retry interval after a normal probe failure or a non-target state length. Default is 1800 seconds (30 minutes).",
+        codexTicketRateLimitRetrySeconds: "429 rate-limit retry interval (seconds)",
+        codexTicketRateLimitRetrySecondsDesc:
+          "Retry interval after an upstream 429. A confirmed quota exhaustion still waits for the actual window reset. Default is 3600 seconds (1 hour).",
+        codexTicketTargetMode: "Target ticket mode",
+        codexTicketTargetAuto: "Automatic by account type",
+        codexTicketTargetManual: "Manual length",
+        codexTicketTargetLength: "Target length",
+        codexTicketMissingPolicy: "When the ticket is missing",
+        codexTicketMissingPause: "Pause this model",
+        codexTicketMissingAllow: "Continue without injection",
+        codexTicketAstra: "astra model policy",
+        codexTicketSol: "sol model policy",
         codexClientRestrictionTitle: "Codex client restriction",
         codexHardeningDesc:
           "Only affects OpenAI OAuth accounts with 'Codex official clients only' enabled (global). Beyond User-Agent/Originator, harden the decision with a version range, an engine-fingerprint gate, and black/whitelists.",
