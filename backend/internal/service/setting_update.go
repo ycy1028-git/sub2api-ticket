@@ -485,6 +485,34 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyOpenAICodexUserAgent] = strings.TrimSpace(settings.OpenAICodexUserAgent)
 	updates[SettingKeyOpenAICodexClientVersion] = NormalizeCodexClientVersion(settings.OpenAICodexClientVersion)
 	updates[SettingKeyOpenAICodexVersionAutoSyncEnabled] = strconv.FormatBool(settings.OpenAICodexVersionAutoSyncEnabled)
+	updates[SettingKeyOpenAICodexTicketEnabled] = strconv.FormatBool(settings.OpenAICodexTicketEnabled)
+	if err := ValidateOpenAICodexTicketHarvestProxyURL(settings.OpenAICodexTicketHarvestProxyURL); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_CODEX_HARVEST_PROXY", err.Error())
+	}
+	updates[SettingKeyOpenAICodexTicketHarvestProxyURL] = strings.TrimSpace(settings.OpenAICodexTicketHarvestProxyURL)
+	if settings.OpenAICodexTicketMissRetrySeconds <= 0 {
+		settings.OpenAICodexTicketMissRetrySeconds = openAICodexTicketDefaultMissRetrySeconds
+	}
+	if err := ValidateOpenAICodexTicketMissRetrySeconds(settings.OpenAICodexTicketMissRetrySeconds); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_CODEX_TICKET_MISS_RETRY_SECONDS", err.Error())
+	}
+	updates[SettingKeyOpenAICodexTicketMissRetrySeconds] = strconv.Itoa(settings.OpenAICodexTicketMissRetrySeconds)
+	if settings.OpenAICodexTicketRateLimitRetrySeconds <= 0 {
+		settings.OpenAICodexTicketRateLimitRetrySeconds = openAICodexTicketDefaultRateLimitRetrySeconds
+	}
+	if err := ValidateOpenAICodexTicketRateLimitRetrySeconds(settings.OpenAICodexTicketRateLimitRetrySeconds); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_CODEX_TICKET_RATE_LIMIT_RETRY_SECONDS", err.Error())
+	}
+	updates[SettingKeyOpenAICodexTicketRateLimitRetrySeconds] = strconv.Itoa(settings.OpenAICodexTicketRateLimitRetrySeconds)
+	modelPolicies, err := NormalizeOpenAICodexTicketModelPolicies(settings.OpenAICodexTicketModelPolicies)
+	if err != nil {
+		return nil, infraerrors.BadRequest("INVALID_CODEX_TICKET_MODEL_POLICIES", err.Error())
+	}
+	modelPoliciesJSON, err := json.Marshal(modelPolicies)
+	if err != nil {
+		return nil, fmt.Errorf("marshal codex ticket model policies: %w", err)
+	}
+	updates[SettingKeyOpenAICodexTicketModelPolicies] = string(modelPoliciesJSON)
 	// SettingKeyOpenAICodexClientVersionSynced 由自动同步任务独占写入，此处不得覆盖，
 	// 否则面板保存会把同步结果清空。
 	// codex_cli_only 加固
@@ -739,6 +767,10 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	// 版本号缓存只做失效，不在此重算：生效值还取决于自动同步写入的 synced 键，
 	// 这里没有它的最新值，重算会把同步结果覆盖成陈旧值。
 	s.InvalidateOpenAICodexClientVersionCache()
+	s.InvalidateOpenAICodexTicketEnabledCache()
+	s.InvalidateOpenAICodexTicketHarvestProxyCache()
+	s.InvalidateOpenAICodexTicketRetryPolicyCache()
+	s.InvalidateOpenAICodexTicketModelPoliciesCache()
 	openAIAdvancedSchedulerSettingSF.Forget(openAIAdvancedSchedulerSettingKey)
 	openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{
 		lowUpstreamRatePriorityEnabled: settings.OpenAILowUpstreamRatePriorityEnabled,

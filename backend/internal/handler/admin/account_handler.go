@@ -65,7 +65,13 @@ type AccountHandler struct {
 	grokImportProber        grokImportProber
 	upstreamBillingProbe    *service.UpstreamBillingProbeService
 	ollamaCloudUsage        *service.OllamaCloudUsageService
+	codexTicketSettings     *service.SettingService
 	cfg                     *config.Config
+	codexTicketProber       CodexTicketProber
+}
+
+type CodexTicketProber interface {
+	ProbeOpenAICodexTicket(ctx context.Context, accountID int64, model string) ([]service.OpenAICodexTicketStatus, error)
 }
 
 // SetUpstreamBillingProbeService attaches the optional remote billing probe service.
@@ -75,6 +81,15 @@ func (h *AccountHandler) SetUpstreamBillingProbeService(probe *service.UpstreamB
 
 func (h *AccountHandler) SetOllamaCloudUsageService(usage *service.OllamaCloudUsageService) {
 	h.ollamaCloudUsage = usage
+}
+
+// SetCodexTicketSettings supplies the live policy without mutating shared config.
+func (h *AccountHandler) SetCodexTicketSettings(settings *service.SettingService) {
+	h.codexTicketSettings = settings
+}
+
+func (h *AccountHandler) SetCodexTicketProber(prober CodexTicketProber) {
+	h.codexTicketProber = prober
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -337,6 +352,7 @@ const accountListGroupUngroupedQueryValue = "ungrouped"
 
 func (h *AccountHandler) accountResponseFromService(account *service.Account) *dto.Account {
 	out := dto.AccountFromService(account)
+	h.enrichCodexTicketStatus(account, out)
 	if h != nil && h.ollamaCloudUsage != nil && out != nil {
 		h.ollamaCloudUsage.EnrichState(out.OllamaCloudUsage)
 	}
@@ -345,6 +361,7 @@ func (h *AccountHandler) accountResponseFromService(account *service.Account) *d
 
 func (h *AccountHandler) accountListResponseFromService(account *service.Account) *dto.Account {
 	out := dto.AccountFromServiceShallow(account)
+	h.enrichCodexTicketStatus(account, out)
 	if out != nil && account != nil {
 		out.Proxy = dto.ProxyFromService(account.Proxy)
 	}
@@ -352,6 +369,17 @@ func (h *AccountHandler) accountListResponseFromService(account *service.Account
 		h.ollamaCloudUsage.EnrichState(out.OllamaCloudUsage)
 	}
 	return out
+}
+
+func (h *AccountHandler) enrichCodexTicketStatus(account *service.Account, out *dto.Account) {
+	if h != nil && h.cfg != nil && out != nil {
+		cfg := h.cfg.Gateway.OpenAICodexTicket
+		if h.codexTicketSettings != nil {
+			cfg.Enabled = h.codexTicketSettings.GetOpenAICodexTicketEnabled(context.Background(), cfg.Enabled)
+			cfg.ModelPolicies = h.codexTicketSettings.GetOpenAICodexTicketModelPolicies(context.Background(), cfg.ModelPolicies)
+		}
+		out.CodexTurnTickets = service.OpenAICodexTicketStatuses(account, cfg, time.Now())
+	}
 }
 
 func (h *AccountHandler) isSimpleMode() bool {
@@ -944,6 +972,35 @@ func (h *AccountHandler) GetByID(c *gin.Context) {
 	}
 
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+}
+
+type ProbeCodexTicketRequest struct {
+	Model string `json:"model" binding:"required"`
+}
+
+// ProbeCodexTicket performs one immediate, model-specific ticket harvest.
+// POST /api/v1/admin/accounts/:id/codex-ticket/probe
+func (h *AccountHandler) ProbeCodexTicket(c *gin.Context) {
+	if h == nil || h.codexTicketProber == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Codex ticket prober unavailable")
+		return
+	}
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	var req ProbeCodexTicketRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	statuses, err := h.codexTicketProber.ProbeOpenAICodexTicket(c.Request.Context(), accountID, req.Model)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"model": req.Model, "tickets": statuses})
 }
 
 // CheckMixedChannel handles checking mixed channel risk for account-group binding.

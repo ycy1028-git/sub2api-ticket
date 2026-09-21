@@ -243,20 +243,25 @@ type UpdateSettingsRequest struct {
 	BackendModeEnabled bool `json:"backend_mode_enabled"`
 
 	// Gateway forwarding behavior
-	OpenAITTFTMode                         *string `json:"openai_ttft_mode"`
-	EnableFingerprintUnification           *bool   `json:"enable_fingerprint_unification"`
-	EnableMetadataPassthrough              *bool   `json:"enable_metadata_passthrough"`
-	EnableCCHSigning                       *bool   `json:"enable_cch_signing"`
-	EnableClaudeOAuthSystemPromptInjection *bool   `json:"enable_claude_oauth_system_prompt_injection"`
-	ClaudeOAuthSystemPrompt                *string `json:"claude_oauth_system_prompt"`
-	ClaudeOAuthSystemPromptBlocks          *string `json:"claude_oauth_system_prompt_blocks"`
-	EnableAnthropicCacheTTL1hInjection     *bool   `json:"enable_anthropic_cache_ttl_1h_injection"`
-	RewriteMessageCacheControl             *bool   `json:"rewrite_message_cache_control"`
-	EnableClientDatelineNormalization      *bool   `json:"enable_client_dateline_normalization"`
-	AntigravityUserAgentVersion            *string `json:"antigravity_user_agent_version"`
-	OpenAICodexUserAgent                   *string `json:"openai_codex_user_agent"`
-	OpenAICodexClientVersion               *string `json:"openai_codex_client_version"`
-	OpenAICodexVersionAutoSyncEnabled      *bool   `json:"openai_codex_version_auto_sync_enabled"`
+	OpenAITTFTMode                         *string                                        `json:"openai_ttft_mode"`
+	EnableFingerprintUnification           *bool                                          `json:"enable_fingerprint_unification"`
+	EnableMetadataPassthrough              *bool                                          `json:"enable_metadata_passthrough"`
+	EnableCCHSigning                       *bool                                          `json:"enable_cch_signing"`
+	EnableClaudeOAuthSystemPromptInjection *bool                                          `json:"enable_claude_oauth_system_prompt_injection"`
+	ClaudeOAuthSystemPrompt                *string                                        `json:"claude_oauth_system_prompt"`
+	ClaudeOAuthSystemPromptBlocks          *string                                        `json:"claude_oauth_system_prompt_blocks"`
+	EnableAnthropicCacheTTL1hInjection     *bool                                          `json:"enable_anthropic_cache_ttl_1h_injection"`
+	RewriteMessageCacheControl             *bool                                          `json:"rewrite_message_cache_control"`
+	EnableClientDatelineNormalization      *bool                                          `json:"enable_client_dateline_normalization"`
+	AntigravityUserAgentVersion            *string                                        `json:"antigravity_user_agent_version"`
+	OpenAICodexUserAgent                   *string                                        `json:"openai_codex_user_agent"`
+	OpenAICodexClientVersion               *string                                        `json:"openai_codex_client_version"`
+	OpenAICodexVersionAutoSyncEnabled      *bool                                          `json:"openai_codex_version_auto_sync_enabled"`
+	OpenAICodexTicketEnabled               *bool                                          `json:"openai_codex_ticket_enabled"`
+	OpenAICodexTicketHarvestProxyURL       string                                         `json:"openai_codex_ticket_harvest_proxy_url"`
+	OpenAICodexTicketMissRetrySeconds      *int                                           `json:"openai_codex_ticket_miss_retry_seconds"`
+	OpenAICodexTicketRateLimitRetrySeconds *int                                           `json:"openai_codex_ticket_rate_limit_retry_seconds"`
+	OpenAICodexTicketModelPolicies         map[string]config.OpenAICodexTicketModelPolicy `json:"openai_codex_ticket_model_policies"`
 
 	// codex_cli_only 加固（global-only）
 	MinCodexVersion                      string `json:"min_codex_version"`
@@ -1455,6 +1460,18 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}
 		req.OpenAICodexClientVersion = &normalized
 	}
+	if req.OpenAICodexTicketMissRetrySeconds != nil {
+		if err := service.ValidateOpenAICodexTicketMissRetrySeconds(*req.OpenAICodexTicketMissRetrySeconds); err != nil {
+			response.Error(c, http.StatusBadRequest, "invalid openai_codex_ticket_miss_retry_seconds: "+err.Error())
+			return
+		}
+	}
+	if req.OpenAICodexTicketRateLimitRetrySeconds != nil {
+		if err := service.ValidateOpenAICodexTicketRateLimitRetrySeconds(*req.OpenAICodexTicketRateLimitRetrySeconds); err != nil {
+			response.Error(c, http.StatusBadRequest, "invalid openai_codex_ticket_rate_limit_retry_seconds: "+err.Error())
+			return
+		}
+	}
 
 	// codex_cli_only 加固：最低/最高 Codex 版本（空=禁用，或合法 semver；max>=min）
 	if req.MinCodexVersion != "" && !semverPattern.MatchString(req.MinCodexVersion) {
@@ -1767,6 +1784,37 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.OpenAICodexVersionAutoSyncEnabled
 			}
 			return previousSettings.OpenAICodexVersionAutoSyncEnabled
+		}(),
+		OpenAICodexTicketEnabled: func() bool {
+			if req.OpenAICodexTicketEnabled != nil {
+				return *req.OpenAICodexTicketEnabled
+			}
+			return previousSettings.OpenAICodexTicketEnabled
+		}(),
+		OpenAICodexTicketHarvestProxyURL: func() string {
+			next := strings.TrimSpace(req.OpenAICodexTicketHarvestProxyURL)
+			if service.IsMaskedProxyURL(next) {
+				return previousSettings.OpenAICodexTicketHarvestProxyURL
+			}
+			return next
+		}(),
+		OpenAICodexTicketMissRetrySeconds: func() int {
+			if req.OpenAICodexTicketMissRetrySeconds != nil {
+				return *req.OpenAICodexTicketMissRetrySeconds
+			}
+			return previousSettings.OpenAICodexTicketMissRetrySeconds
+		}(),
+		OpenAICodexTicketRateLimitRetrySeconds: func() int {
+			if req.OpenAICodexTicketRateLimitRetrySeconds != nil {
+				return *req.OpenAICodexTicketRateLimitRetrySeconds
+			}
+			return previousSettings.OpenAICodexTicketRateLimitRetrySeconds
+		}(),
+		OpenAICodexTicketModelPolicies: func() map[string]config.OpenAICodexTicketModelPolicy {
+			if req.OpenAICodexTicketModelPolicies != nil {
+				return req.OpenAICodexTicketModelPolicies
+			}
+			return previousSettings.OpenAICodexTicketModelPolicies
 		}(),
 		MinCodexVersion:       strings.TrimSpace(req.MinCodexVersion),
 		MaxCodexVersion:       strings.TrimSpace(req.MaxCodexVersion),
@@ -2310,6 +2358,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		OpenAICodexClientVersion:                               updatedSettings.OpenAICodexClientVersion,
 		OpenAICodexClientVersionSynced:                         updatedSettings.OpenAICodexClientVersionSynced,
 		OpenAICodexVersionAutoSyncEnabled:                      updatedSettings.OpenAICodexVersionAutoSyncEnabled,
+		OpenAICodexTicketEnabled:                               updatedSettings.OpenAICodexTicketEnabled,
+		OpenAICodexTicketHarvestProxyURL:                       service.MaskProxyURL(updatedSettings.OpenAICodexTicketHarvestProxyURL),
+		OpenAICodexTicketHarvestProxyConfigured:                strings.TrimSpace(updatedSettings.OpenAICodexTicketHarvestProxyURL) != "",
+		OpenAICodexTicketMissRetrySeconds:                      updatedSettings.OpenAICodexTicketMissRetrySeconds,
+		OpenAICodexTicketRateLimitRetrySeconds:                 updatedSettings.OpenAICodexTicketRateLimitRetrySeconds,
+		OpenAICodexTicketModelPolicies:                         updatedSettings.OpenAICodexTicketModelPolicies,
 		MinCodexVersion:                                        updatedSettings.MinCodexVersion,
 		MaxCodexVersion:                                        updatedSettings.MaxCodexVersion,
 		CodexCLIOnlyBlacklist:                                  updatedSettings.CodexCLIOnlyBlacklist,

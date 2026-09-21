@@ -116,8 +116,21 @@
       </div>
     </template>
 
-    <!-- OpenAI OAuth accounts: single source from /usage API -->
-    <template v-else-if="account.platform === 'openai' && account.type === 'oauth'">
+    <!-- OpenAI Codex accounts: ticket status; usage querying remains OAuth-only. -->
+    <template v-else-if="account.platform === 'openai' && (account.type === 'oauth' || account.type === 'setup-token')">
+      <div v-if="codexTurnTickets.length" class="mb-1 space-y-0.5">
+        <div
+          v-for="ticket in codexTurnTickets"
+          :key="ticket.model"
+          class="flex items-center gap-1 text-[10px] leading-4"
+        >
+          <span class="truncate font-medium text-gray-500 dark:text-gray-400" :title="ticket.model">{{ shortCodexTicketModel(ticket.model) }}</span>
+          <span v-if="ticket.ready" class="text-emerald-600 dark:text-emerald-400">{{ ticket.length }}/{{ ticket.target_length }} · {{ formatCodexTicketRemaining(ticket.remaining_seconds) }}</span>
+          <span v-else-if="ticket.ticket_type === 'quota_exhausted' || ticket.ticket_type === 'rate_limited'" class="text-red-600 dark:text-red-400">{{ compactCodexTicketStatus(ticket) }}</span>
+          <span v-else-if="ticket.blocked" class="text-amber-600 dark:text-amber-400">{{ compactCodexTicketStatus(ticket) }}</span>
+          <span v-else class="text-gray-500">{{ compactCodexTicketStatus(ticket) }}</span>
+        </div>
+      </div>
       <div v-if="hasOpenAIUsageFallback" class="space-y-1">
         <UsageProgressBar
           v-if="usageInfo?.five_hour"
@@ -186,6 +199,7 @@
         <div class="text-xs text-gray-400">-</div>
         <!-- Always allow on-demand upstream quota query, even before local data exists. -->
         <OpenAIQuotaResetCell
+          v-if="account.type === 'oauth'"
           :account="account"
           class="mt-1"
           @account-updated="handleQuotaResetAccountUpdated"
@@ -786,6 +800,35 @@ const hasOpenAIUsageFallback = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
   return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day
 })
+
+const codexTurnTickets = computed(() => props.account.codex_turn_tickets ?? [])
+type CodexTicketStatus = NonNullable<Account['codex_turn_tickets']>[number]
+
+function shortCodexTicketModel(model: string) {
+  if (model === 'gpt-6-astra') return 'astra'
+  if (model === 'gpt-5.6-sol') return 'sol'
+  return model
+}
+
+function formatCodexTicketRemaining(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds || 0))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}m${String(s).padStart(2, '0')}s`
+}
+
+function compactCodexTicketStatus(ticket: CodexTicketStatus) {
+  const current = ticket.ready
+    ? ticket.length || ticket.observed_length
+    : ticket.observed_length || ticket.length
+  if (ticket.ticket_type === 'quota_exhausted') return t('admin.accounts.openai.codexTicketTypeQuotaExhausted')
+  if (ticket.ticket_type === 'rate_limited') return t('admin.accounts.openai.codexTicketTypeRateLimited')
+  if (ticket.ticket_type === 'non_target' && current) return `${current}/${ticket.target_length}`
+  if (ticket.ticket_type === 'expired') return t('admin.accounts.openai.codexTicketTypeExpired')
+  if (ticket.ticket_type === 'disabled') return t('admin.accounts.openai.codexTicketTypeDisabled')
+  if (ticket.blocked) return t('admin.accounts.openai.codexTurnTicketPaused', { length: ticket.target_length })
+  return t('admin.accounts.openai.codexTurnTicketMissing')
+}
 
 const openAISevenDayEstimatedTotalCost = computed(() => {
   const sevenDay = usageInfo.value?.seven_day

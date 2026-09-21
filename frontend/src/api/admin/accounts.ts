@@ -240,6 +240,14 @@ export async function update(id: number, updates: UpdateAccountRequest): Promise
   return data
 }
 
+export async function probeCodexTicket(id: number, model: string): Promise<{ model: string; tickets: NonNullable<Account['codex_turn_tickets']> }> {
+  const { data } = await apiClient.post<{ model: string; tickets: NonNullable<Account['codex_turn_tickets']> }>(
+    `/admin/accounts/${id}/codex-ticket/probe`,
+    { model }
+  )
+  return data
+}
+
 export async function getGrokMediaEligibility(id: number): Promise<GrokMediaEligibilityState> {
   const { data } = await apiClient.get<GrokMediaEligibilityState>(
     `/admin/accounts/${id}/grok-media-eligibility`
@@ -1079,6 +1087,7 @@ export const accountsAPI = {
   create,
   duplicate,
   update,
+  probeCodexTicket,
   getGrokMediaEligibility,
   updateGrokMediaEligibility,
   checkMixedChannelRisk,
